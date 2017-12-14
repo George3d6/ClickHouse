@@ -1,0 +1,72 @@
+#!/bin/bash
+
+set -e
+
+CURDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd $CURDIR
+
+source "./release_lib.sh"
+
+DEB_CC=gcc-6
+DEB_CXX=g++-6
+
+CONTROL=debian/control
+DEBUILD_NOSIGN_OPTIONS="-us -uc"
+
+if [ -z "$REVISION" ] ; then
+    get_revision_author
+fi
+
+while [[ $1 == --* ]]
+do
+    if [[ $1 == '--test' ]]; then
+        TEST='yes'
+        VERSION_POSTFIX+=-test
+        shift
+    elif [[ $1 == '--ignore-deps' ]]; then
+        DEBUILD_NODEPS_OPTIONS="-d"
+        shift
+    elif [[ $1 == '--version' ]]; then
+        gen_revision_author
+        git push
+        exit 0
+    elif [[ $1 == '--head' ]]; then
+        REVISION=`git rev-parse HEAD`
+        shift
+    else
+        echo "Unknown option $1"
+        exit 2
+    fi
+done
+
+
+# Build options
+if [ -n "$SANITIZER" ]
+then
+    CMAKE_BUILD_TYPE=$SANITIZER
+    VERSION_POSTFIX+=-${SANITIZER,,}
+    # todo: нужно ли отключить libtcmalloc?
+    LIBTCMALLOC_OPTS="-DENABLE_LIBTCMALLOC=0"
+    # GLIBC_COMPATIBILITY отключен по умолчанию
+elif [[ $BUILD_TYPE == 'valgrind' ]]; then
+    LIBTCMALLOC_OPTS="-DENABLE_LIBTCMALLOC=0"
+    VERSION_POSTFIX+=-$BUILD_TYPE
+elif [[ $BUILD_TYPE == 'debug' ]]; then
+    CMAKE_BUILD_TYPE=Debug
+    LIBTCMALLOC_OPTS="-DDEBUG_LIBTCMALLOC=1"
+    VERSION_POSTFIX+=-$BUILD_TYPE
+fi
+
+if [ -z "$THREAD_COUNT" ] ; then
+    THREAD_COUNT=`nproc || grep -c ^processor /proc/cpuinfo`
+fi
+
+CMAKE_FLAGS+=" $LIBTCMALLOC_OPTS -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE"
+
+REVISION+=$VERSION_POSTFIX
+echo -e "\nCurrent revision is $REVISION"
+
+gen_changelog "$REVISION" "" "$AUTHOR" ""
+
+# Build (only binary packages).
+debuild -e PATH -e SSH_AUTH_SOCK -e DEB_BUILD_OPTIONS=parallel=$THREAD_COUNT -e DEB_CC=$DEB_CC -e DEB_CXX=$DEB_CXX -e USE_INTERNAL_COMPILER=1 -e CMAKE_FLAGS="$CMAKE_FLAGS" -b ${DEBUILD_NOSIGN_OPTIONS} ${DEBUILD_NODEPS_OPTIONS}
